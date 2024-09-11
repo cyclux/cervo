@@ -1,1 +1,2 @@
-
+option('install_libs', type: 'boolean', value: true, description: 'Install shared libraries')
+option('install_exec', type: 'boolean', value: true, description: 'Install executables')

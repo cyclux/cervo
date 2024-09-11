@@ -1,26 +1,17 @@
 #ifndef PWMCONTROLLER_HPP
 #define PWMCONTROLLER_HPP
 
-#include <fstream>
+#include <map>
 #include <string>
-#include <thread>
 #include <vector>
-
-// Constants for the PWM configuration
-constexpr int PULSE_WIDTH_MIN = 800;
-constexpr int PULSE_WIDTH_MAX = 2000;
-constexpr int PULSE_WIDTH_NEUTRAL = 1500;
-constexpr int STEP_DIST = 500;
-constexpr int SPEED = 1000;
-constexpr int PERIOD = 20000000; // 20,000µs (50Hz)
-constexpr int CHANNEL = 2;       // 2 and 3 are valid on pi 5
-constexpr const char *CHIP = "pwmchip2";
-constexpr bool VERBOSE = false;
 
 class PWMController {
 public:
+  // Constructor: Initialize the PWM controller with multiple channels
+  PWMController(const std::string &chip = "pwmchip2");
+  ~PWMController(); // Destructor to close all file descriptors
+
   // Method to initialize the PWM controller for multiple channels
-  PWMController(int channel = CHANNEL, const std::string &chip = CHIP);
   void init(const std::vector<int> &channels);
 
   // Methods to interact with individual PWM channels
@@ -38,16 +29,30 @@ public:
   int convertDutyCycle(const int dutyCycle) const;
 
 private:
-  int channel;
   std::string chip;
-  std::string pwm;
-  // Method to write values to sysfs files
-  void writeToFile(const std::string &path, const std::string &value) const;
+
+  // Structure to hold file descriptors for each PWM channel
+  struct ChannelFDs {
+    int export_fd;
+    int period_fd;
+    int duty_cycle_fd;
+    int enable_fd;
+  };
+
+  // Map to store file descriptors for each channel
+  std::map<int, ChannelFDs> channel_fds;
+
+  // Helper method to write values to sysfs files via file descriptors
+  void writeToFile(int fd, const std::string &value) const;
+
+  // Helper method to open file descriptors and form file paths
+  void openChannelFileDescriptors(int channel);
+  void initializeChannel(int channel);
+  void configureChannel(int channel);
+
+  // General method to write values to a specific property
+  void setPWMValue(const int channel, const std::string &property,
+                   const std::string &value);
 };
-
-int easeInOutQuad(float t, int b, int c, int d);
-
-void handleKeyPresses(PWMController &servo, const int speed, const int stepdist,
-                      int &currentDutyCyclePan, int &currentDutyCycleTilt);
 
 #endif // PWMCONTROLLER_HPP
