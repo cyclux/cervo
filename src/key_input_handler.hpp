@@ -3,7 +3,6 @@
 
 #include "cervo.hpp"
 
-void handleKeyPresses(PWMController &servo, const int speed, const int stepdist,
-                      int &currentDutyCyclePan, int &currentDutyCycleTilt);
+void handleKeyPresses(PWMController &servo, const int speed, const int stepdist);
 
 #endif // KEYINPUTHANDLER_HPP

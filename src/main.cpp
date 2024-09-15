@@ -28,6 +28,11 @@ int main(int argc, char *argv[]) {
       .scan<'i', int>()
       .default_value(PWMConfig::STEP_DIST);
 
+  program.add_argument("--fastmove")
+      .help("Enable fast move to position without smoothing")
+      .default_value(false)
+      .implicit_value(true);
+
   try {
     program.parse_args(argc, argv);
   } catch (const std::runtime_error &err) {
@@ -41,8 +46,6 @@ int main(int argc, char *argv[]) {
   PWMController servo(CHIP);
   servo.init({2, 3});
 
-  int currentDutyCyclePan = PWMConfig::PULSE_WIDTH_NEUTRAL;
-  int currentDutyCycleTilt = PWMConfig::PULSE_WIDTH_NEUTRAL;
   int targetDutyCyclePan = PWMConfig::PULSE_WIDTH_NEUTRAL;
   int targetDutyCycleTilt = PWMConfig::PULSE_WIDTH_NEUTRAL;
 
@@ -53,36 +56,25 @@ int main(int argc, char *argv[]) {
     targetDutyCyclePan = program.get<int>("--pos");
     targetDutyCycleTilt = program.get<int>("--pos");
 
-    std::cout << "Current pos - pan: " << currentDutyCyclePan
-              << ", tilt: " << currentDutyCycleTilt << std::endl;
+    std::cout << "Current pos - pan: " << servo.getCurrentDutyCyclePan()
+              << ", tilt: " << servo.getCurrentDutyCycleTilt() << std::endl;
 
-    // Start smoothMove in separate threads for concurrent execution
-    std::thread panThread(&PWMController::smoothMove, &servo, 2,
-                          std::ref(currentDutyCyclePan), targetDutyCyclePan,
-                          speed);
-    std::thread tiltThread(&PWMController::smoothMove, &servo, 3,
-                           std::ref(currentDutyCycleTilt), targetDutyCycleTilt,
-                           speed);
-
-    panThread.join();
-    tiltThread.join();
+    if (program.get<bool>("--fastmove")) {
+      // Use moveThread for immediate movement
+      servo.moveThread(targetDutyCyclePan, targetDutyCycleTilt);
+    } else {
+      // Use smoothMoveThread for smooth movement
+      servo.smoothMoveThread(targetDutyCyclePan, targetDutyCycleTilt, speed);
+    }
   }
 
   if (program.get<bool>("--keycontrol")) {
-    handleKeyPresses(servo, speed, stepdist, currentDutyCyclePan,
-                     currentDutyCycleTilt);
+    handleKeyPresses(servo, speed, stepdist);
   }
 
   // Move back to neutral position concurrently
-  std::thread panThread(&PWMController::smoothMove, &servo, 2,
-                        std::ref(currentDutyCyclePan),
-                        PWMConfig::PULSE_WIDTH_NEUTRAL, speed);
-  std::thread tiltThread(&PWMController::smoothMove, &servo, 3,
-                         std::ref(currentDutyCycleTilt),
+  servo.smoothMoveThread(PWMConfig::PULSE_WIDTH_NEUTRAL,
                          PWMConfig::PULSE_WIDTH_NEUTRAL, speed);
-
-  panThread.join();
-  tiltThread.join();
 
   servo.disable(2);
   servo.disable(3);

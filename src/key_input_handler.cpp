@@ -3,8 +3,8 @@
 #include <thread>
 #include <unordered_set>
 
-void handleKeyPresses(PWMController &servo, const int speed, const int stepdist,
-                      int &currentDutyCyclePan, int &currentDutyCycleTilt) {
+void handleKeyPresses(PWMController &servo, const int speed,
+                      const int stepdist) {
   // Initialize ncurses to capture key presses
   initscr();
   cbreak();
@@ -13,8 +13,8 @@ void handleKeyPresses(PWMController &servo, const int speed, const int stepdist,
   curs_set(0);           // Hide the cursor
   nodelay(stdscr, TRUE); // Non-blocking getch
 
-  int targetDutyCyclePan = currentDutyCyclePan;
-  int targetDutyCycleTilt = currentDutyCycleTilt;
+  int targetDutyCyclePan = servo.getCurrentDutyCyclePan();
+  int targetDutyCycleTilt = servo.getCurrentDutyCycleTilt();
 
   bool running = true;
 
@@ -55,34 +55,28 @@ void handleKeyPresses(PWMController &servo, const int speed, const int stepdist,
 
     if (panChanged || tiltChanged) {
       if (panChanged) {
-        targetDutyCyclePan = currentDutyCyclePan + (stepdist * panDirection);
+        targetDutyCyclePan =
+            servo.getCurrentDutyCyclePan() + (stepdist * panDirection);
       }
       if (tiltChanged) {
-        targetDutyCycleTilt = currentDutyCycleTilt + (stepdist * tiltDirection);
+        targetDutyCycleTilt =
+            servo.getCurrentDutyCycleTilt() + (stepdist * tiltDirection);
       }
 
       if (panChanged && tiltChanged) {
         // Move both pan and tilt concurrently
-        std::thread panThread(&PWMController::smoothMove, &servo, 2,
-                              std::ref(currentDutyCyclePan), targetDutyCyclePan,
-                              speed);
-        std::thread tiltThread(&PWMController::smoothMove, &servo, 3,
-                               std::ref(currentDutyCycleTilt),
-                               targetDutyCycleTilt, speed);
-
-        panThread.join();
-        tiltThread.join();
+        servo.smoothMoveThread(targetDutyCyclePan, targetDutyCycleTilt, speed);
       } else if (panChanged) {
-        servo.smoothMove(2, currentDutyCyclePan, targetDutyCyclePan, speed);
+        servo.smoothMove(2, targetDutyCyclePan, speed);
       } else if (tiltChanged) {
-        servo.smoothMove(3, currentDutyCycleTilt, targetDutyCycleTilt, speed);
+        servo.smoothMove(3, targetDutyCycleTilt, speed);
       }
     }
 
     // Clear the screen and print the current duty cycle
     clear();
     mvprintw(0, 0, "Current Duty Cycle | Pan: %d | Tilt: %d",
-             currentDutyCyclePan, currentDutyCycleTilt);
+             servo.getCurrentDutyCyclePan(), servo.getCurrentDutyCycleTilt());
     refresh();
 
     std::this_thread::sleep_for(

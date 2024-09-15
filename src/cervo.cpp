@@ -37,7 +37,9 @@ int easeInOutQuad(float t, int b, int c, int d) {
   return -(c / 2.0f) * (t * (t - 2) - 1) + b;
 }
 
-PWMController::PWMController(const std::string &chip) : chip(chip) {}
+PWMController::PWMController(const std::string &chip)
+    : chip(chip), currentDutyCyclePan(PWMConfig::PULSE_WIDTH_NEUTRAL),
+      currentDutyCycleTilt(PWMConfig::PULSE_WIDTH_NEUTRAL) {}
 
 PWMController::~PWMController() {
   for (auto &[channel, fds] : channel_fds) {
@@ -159,14 +161,23 @@ void PWMController::writeToFile(int fd, const std::string &value) const {
   }
 }
 
-void PWMController::smoothMove(int channel, int &currentDutyCycle,
-                               int targetDutyCycle, int duration) {
+void PWMController::smoothMove(int channel, int targetDutyCycle, int duration) {
+  int *currentDutyCyclePtr = nullptr;
+  if (channel == 2) {
+    currentDutyCyclePtr = &currentDutyCyclePan;
+  } else if (channel == 3) {
+    currentDutyCyclePtr = &currentDutyCycleTilt;
+  } else {
+    std::cerr << "Invalid channel: " << channel << std::endl;
+    return;
+  }
+
+  int &currentDutyCycle = *currentDutyCyclePtr;
   const int stepDuration = 20; // PWM period (20ms)
   const int totalSteps = duration / stepDuration;
 
   for (int step = 0; step <= totalSteps; ++step) {
-    float t = step / static_cast<float>(
-                         totalSteps); // Normalize step to range from 0 to 1
+    float t = step / static_cast<float>(totalSteps); // Normalize step to range from 0 to 1
     int newDutyCycle = easeInOutQuad(t, currentDutyCycle,
                                      targetDutyCycle - currentDutyCycle, 1);
     setDutyCycle(channel, newDutyCycle);
@@ -174,4 +185,26 @@ void PWMController::smoothMove(int channel, int &currentDutyCycle,
   }
 
   currentDutyCycle = targetDutyCycle;
+}
+
+void PWMController::smoothMoveThread(int targetDutyCyclePan,
+                                     int targetDutyCycleTilt, int duration) {
+  std::thread panThread(&PWMController::smoothMove, this, 2, targetDutyCyclePan,
+                        duration);
+  std::thread tiltThread(&PWMController::smoothMove, this, 3,
+                         targetDutyCycleTilt, duration);
+
+  panThread.join();
+  tiltThread.join();
+}
+
+void PWMController::moveThread(int dutyCyclePan, int dutyCycleTilt) {
+  std::thread panThread(&PWMController::setDutyCycle, this, 2, dutyCyclePan);
+  std::thread tiltThread(&PWMController::setDutyCycle, this, 3, dutyCycleTilt);
+
+  panThread.join();
+  tiltThread.join();
+
+  currentDutyCyclePan = dutyCyclePan;
+  currentDutyCycleTilt = dutyCycleTilt;
 }

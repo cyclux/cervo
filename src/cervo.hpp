@@ -26,12 +26,20 @@ public:
   void exportChannel(int channel);
   void setPeriod(int channel, int period);
   void setDutyCycle(int channel, int dutyCycle);
-  void smoothMove(int channel, int &currentDutyCycle, int targetDutyCycle,
-                  int duration);
+  void smoothMove(int channel, int targetDutyCycle, int duration);
+  void smoothMoveThread(int targetDutyCyclePan, int targetDutyCycleTilt, int duration);
+
+  // New method: moveThread
+  void moveThread(int dutyCyclePan, int dutyCycleTilt);
+
   void enable(int channel);
   void disable(int channel);
   bool isExportReady(const int channel) const;
   int convertDutyCycle(const int dutyCycle) const;
+
+  // Getter functions for current duty cycles
+  int getCurrentDutyCyclePan() const { return currentDutyCyclePan; }
+  int getCurrentDutyCycleTilt() const { return currentDutyCycleTilt; }
 
 private:
   std::string chip;
@@ -51,12 +59,14 @@ private:
                    const std::string &value);
 
   static int openFileDescriptor(const std::string &filePath);
-
-  // Overloaded helper method to construct file paths for PWM
   std::string getPWMFilePath(const std::string &chip, int channel,
                              const std::string &property) const;
   std::string getPWMFilePath(const std::string &chip,
                              const std::string &property) const;
+
+  // Member variables for current duty cycles
+  int currentDutyCyclePan;
+  int currentDutyCycleTilt;
 };
 
 int easeInOutQuad(float t, int b, int c, int d);
