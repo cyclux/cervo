@@ -4,11 +4,8 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <iostream>
-#include <mutex>
 #include <thread>
 #include <unistd.h>
-
-std::mutex pwmMutex;
 
 // Helper method to construct file paths for PWM (with channel)
 std::string PWMController::getPWMFilePath(const std::string &chip, int channel,
@@ -80,7 +77,9 @@ void PWMController::initializeChannel(int channel) {
 }
 
 void PWMController::openChannelFileDescriptors(int channel) {
-  ChannelFDs fds;
+  ChannelFDs &fds =
+      channel_fds[channel]; // Directly access ChannelFDs in the map
+
   fds.period_fd = openFileDescriptor(getPWMFilePath(chip, channel, "period"));
   fds.duty_cycle_fd =
       openFileDescriptor(getPWMFilePath(chip, channel, "duty_cycle"));
@@ -89,8 +88,6 @@ void PWMController::openChannelFileDescriptors(int channel) {
   if (fds.period_fd == -1 || fds.duty_cycle_fd == -1 || fds.enable_fd == -1) {
     std::cerr << "Unable to open one or more file descriptors for channel "
               << channel << std::endl;
-  } else {
-    channel_fds[channel] = fds;
   }
 }
 
@@ -124,6 +121,8 @@ bool PWMController::isExportReady(const int channel) const {
 
 void PWMController::setPWMValue(const int channel, const std::string &property,
                                 const std::string &value) {
+  std::lock_guard<std::mutex> lock(
+      channel_fds[channel].mutex); // Lock per-channel mutex
   int fd = openFileDescriptor(getPWMFilePath(chip, channel, property));
   if (fd != -1) {
     writeToFile(fd, value);
@@ -155,7 +154,6 @@ int PWMController::convertDutyCycle(const int dutyCycle) const {
 }
 
 void PWMController::writeToFile(int fd, const std::string &value) const {
-  std::lock_guard<std::mutex> lock(pwmMutex);
   if (pwrite(fd, value.c_str(), value.size(), 0) == -1) {
     std::cerr << "Error writing to file descriptor " << fd << std::endl;
   }

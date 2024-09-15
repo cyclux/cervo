@@ -2,6 +2,7 @@
 #define PWMCONTROLLER_HPP
 
 #include <map>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -35,10 +36,11 @@ public:
 private:
   std::string chip;
   struct ChannelFDs {
-    int export_fd;
-    int period_fd;
-    int duty_cycle_fd;
-    int enable_fd;
+    int export_fd = -1;
+    int period_fd = -1;
+    int duty_cycle_fd = -1;
+    int enable_fd = -1;
+    mutable std::mutex mutex; // Per-channel mutex
   };
   std::map<int, ChannelFDs> channel_fds;
   void writeToFile(int fd, const std::string &value) const;
