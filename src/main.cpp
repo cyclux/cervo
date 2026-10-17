@@ -33,6 +33,10 @@ int main(int argc, char *argv[]) {
       .default_value(false)
       .implicit_value(true);
 
+  program.add_argument("--function")
+      .help("Set the movement function (e.g., easeInOutQuad, linear)")
+      .default_value(std::string("easeInOutQuad"));
+
   try {
     program.parse_args(argc, argv);
   } catch (const std::runtime_error &err) {
@@ -44,40 +48,48 @@ int main(int argc, char *argv[]) {
   const std::string CHIP = "pwmchip2"; // Example value
 
   PWMController servo(CHIP);
-  servo.init({2, 3});
+  servo.init({PWMController::CHANNEL_PAN, PWMController::CHANNEL_TILT});
 
-  int targetDutyCyclePan = PWMConfig::PULSE_WIDTH_NEUTRAL;
-  int targetDutyCycleTilt = PWMConfig::PULSE_WIDTH_NEUTRAL;
+  int targetDutyCyclePan = program.get<int>("--pos");
+  int targetDutyCycleTilt = program.get<int>("--pos");
 
   int speed = program.get<int>("--speed");
   int stepdist = program.get<int>("--stepdist");
+  std::string movementFunction = program.get<std::string>("--function");
 
   if (program.is_used("--pos")) {
-    targetDutyCyclePan = program.get<int>("--pos");
-    targetDutyCycleTilt = program.get<int>("--pos");
-
-    std::cout << "Current pos - pan: " << servo.getCurrentDutyCyclePan()
-              << ", tilt: " << servo.getCurrentDutyCycleTilt() << std::endl;
+    std::cout << "Current pos - pan: "
+              << servo.getCurrentDutyCycle(PWMController::CHANNEL_PAN)
+              << ", tilt: "
+              << servo.getCurrentDutyCycle(PWMController::CHANNEL_TILT)
+              << std::endl;
 
     if (program.get<bool>("--fastmove")) {
-      // Use moveThread for immediate movement
-      servo.moveThread(targetDutyCyclePan, targetDutyCycleTilt);
+      // Immediate movement
+      servo.setDutyCycle(PWMController::CHANNEL_PAN, targetDutyCyclePan);
+      servo.setDutyCycle(PWMController::CHANNEL_TILT, targetDutyCycleTilt);
     } else {
-      // Use smoothMoveThread for smooth movement
-      servo.smoothMoveThread(targetDutyCyclePan, targetDutyCycleTilt, speed);
+      // Smooth movement using setPosition
+      servo.setPosition(targetDutyCyclePan, targetDutyCycleTilt, speed,
+                        movementFunction);
     }
   }
 
   if (program.get<bool>("--keycontrol")) {
-    handleKeyPresses(servo, speed, stepdist);
+    handleKeyPresses(servo, speed, stepdist, movementFunction);
   }
 
-  // Move back to neutral position concurrently
-  servo.smoothMoveThread(PWMConfig::PULSE_WIDTH_NEUTRAL,
-                         PWMConfig::PULSE_WIDTH_NEUTRAL, speed);
+  // Move back to neutral position
+  servo.setPosition(PWMConfig::PULSE_WIDTH_NEUTRAL,
+                    PWMConfig::PULSE_WIDTH_NEUTRAL, speed, movementFunction);
 
-  servo.disable(2);
-  servo.disable(3);
+  // Wait for movements to complete
+  std::this_thread::sleep_for(std::chrono::milliseconds(speed + 100));
+
+  servo.disable(PWMController::CHANNEL_PAN);
+  servo.disable(PWMController::CHANNEL_TILT);
+
+  servo.stopControlLoop();
 
   return 0;
 }

@@ -1,47 +1,18 @@
 #include "cervo.hpp"
 #include <algorithm>
-#include <chrono>
+#include <cerrno>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <iostream>
-#include <thread>
 #include <unistd.h>
 
-// Helper method to construct file paths for PWM (with channel)
-std::string PWMController::getPWMFilePath(const std::string &chip, int channel,
-                                          const std::string &property) const {
-  return "/sys/class/pwm/" + chip + "/pwm" + std::to_string(channel) + "/" +
-         property;
+PWMController::PWMController(const std::string &chip) : chip(chip) {
+  initializeMovementFunctions();
 }
-
-// Helper method to construct file paths for PWM (without channel)
-std::string PWMController::getPWMFilePath(const std::string &chip,
-                                          const std::string &property) const {
-  return "/sys/class/pwm/" + chip + "/" + property;
-}
-
-// Helper to open a file descriptor
-int PWMController::openFileDescriptor(const std::string &filePath) {
-  int fd = open(filePath.c_str(), O_WRONLY);
-  if (fd == -1) {
-    std::cerr << "Unable to open file: " << filePath << std::endl;
-  }
-  return fd;
-}
-
-int easeInOutQuad(float t, int b, int c, int d) {
-  t /= (float)d / 2.0f;
-  if (t < 1)
-    return (c / 2.0f) * t * t + b;
-  t--;
-  return -(c / 2.0f) * (t * (t - 2) - 1) + b;
-}
-
-PWMController::PWMController(const std::string &chip)
-    : chip(chip), currentDutyCyclePan(PWMConfig::PULSE_WIDTH_NEUTRAL),
-      currentDutyCycleTilt(PWMConfig::PULSE_WIDTH_NEUTRAL) {}
 
 PWMController::~PWMController() {
+  stopControlLoop();
   for (auto &[channel, fds] : channel_fds) {
     if (fds.export_fd != -1)
       close(fds.export_fd);
@@ -59,8 +30,10 @@ void PWMController::init(const std::vector<int> &channels) {
     initializeChannel(channel);
     openChannelFileDescriptors(channel);
     configureChannel(channel);
+    currentDutyCycles[channel] = PWMConfig::PULSE_WIDTH_NEUTRAL;
   }
   std::cout << "PWMController initialization complete." << std::endl;
+  startControlLoop();
 }
 
 void PWMController::initializeChannel(int channel) {
@@ -121,34 +94,34 @@ bool PWMController::isExportReady(const int channel) const {
          std::filesystem::exists(pwm_path + "/enable");
 }
 
-void PWMController::setPWMValue(const int channel, const std::string &property,
-                                const std::string &value) {
-  std::lock_guard<std::mutex> lock(
-      channel_fds[channel].mutex); // Lock per-channel mutex
-  int fd = openFileDescriptor(getPWMFilePath(chip, channel, property));
-  if (fd != -1) {
-    writeToFile(fd, value);
-    close(fd);
-  }
-}
-
 void PWMController::setPeriod(const int channel, const int period) {
-  setPWMValue(channel, "period", std::to_string(period));
+  ChannelFDs &fds = channel_fds[channel];
+  std::lock_guard<std::mutex> lock(fds.mutex);
+  writeToFile(fds.period_fd, std::to_string(period));
 }
 
 void PWMController::setDutyCycle(const int channel, int dutyCycle) {
   dutyCycle = std::clamp(dutyCycle, PWMConfig::PULSE_WIDTH_MIN,
                          PWMConfig::PULSE_WIDTH_MAX);
   const int convertedDutyCycle = convertDutyCycle(dutyCycle);
-  setPWMValue(channel, "duty_cycle", std::to_string(convertedDutyCycle));
+
+  ChannelFDs &fds = channel_fds[channel];
+  std::lock_guard<std::mutex> lock(fds.mutex);
+  writeToFile(fds.duty_cycle_fd, std::to_string(convertedDutyCycle));
+
+  currentDutyCycles[channel] = dutyCycle;
 }
 
 void PWMController::enable(const int channel) {
-  setPWMValue(channel, "enable", "1");
+  ChannelFDs &fds = channel_fds[channel];
+  std::lock_guard<std::mutex> lock(fds.mutex);
+  writeToFile(fds.enable_fd, "1");
 }
 
 void PWMController::disable(const int channel) {
-  setPWMValue(channel, "enable", "0");
+  ChannelFDs &fds = channel_fds[channel];
+  std::lock_guard<std::mutex> lock(fds.mutex);
+  writeToFile(fds.enable_fd, "0");
 }
 
 int PWMController::convertDutyCycle(const int dutyCycle) const {
@@ -157,54 +130,161 @@ int PWMController::convertDutyCycle(const int dutyCycle) const {
 
 void PWMController::writeToFile(int fd, const std::string &value) const {
   if (pwrite(fd, value.c_str(), value.size(), 0) == -1) {
-    std::cerr << "Error writing to file descriptor " << fd << std::endl;
+    std::cerr << "Error writing to file descriptor " << fd << ": "
+              << strerror(errno) << std::endl;
   }
 }
 
-void PWMController::smoothMove(int channel, int targetDutyCycle, int duration) {
-  int *currentDutyCyclePtr = nullptr;
-  if (channel == 2) {
-    currentDutyCyclePtr = &currentDutyCyclePan;
-  } else if (channel == 3) {
-    currentDutyCyclePtr = &currentDutyCycleTilt;
+int PWMController::getCurrentDutyCycle(int channel) const {
+  auto it = currentDutyCycles.find(channel);
+  if (it != currentDutyCycles.end()) {
+    return it->second;
   } else {
-    std::cerr << "Invalid channel: " << channel << std::endl;
+    return PWMConfig::PULSE_WIDTH_NEUTRAL;
+  }
+}
+
+void PWMController::initializeMovementFunctions() {
+  movementFunctions["easeInOutQuad"] = easeInOutQuad;
+  movementFunctions["linear"] = linear;
+  // Add more movement functions here if needed
+}
+
+void PWMController::setPosition(int targetPan, int targetTilt, int duration,
+                                const std::string &movementFunctionName) {
+  setPositionPanTilt(targetPan, targetTilt, duration, movementFunctionName);
+}
+
+void PWMController::setPositionPanTilt(
+    int targetPan, int targetTilt, int duration,
+    const std::string &movementFunctionName) {
+  auto it = movementFunctions.find(movementFunctionName);
+  if (it == movementFunctions.end()) {
+    std::cerr << "Movement function not found: " << movementFunctionName
+              << std::endl;
     return;
   }
+  auto movementFunction = it->second;
 
-  int &currentDutyCycle = *currentDutyCyclePtr;
-  const int stepDuration = 20; // PWM period (20ms)
-  const int totalSteps = duration / stepDuration;
+  // Pan Command
+  MovementCommand cmdPan;
+  cmdPan.channel = CHANNEL_PAN;
+  cmdPan.startDutyCycle = getCurrentDutyCycle(CHANNEL_PAN);
+  cmdPan.targetDutyCycle = std::clamp(targetPan, PWMConfig::PULSE_WIDTH_MIN,
+                                      PWMConfig::PULSE_WIDTH_MAX);
+  cmdPan.duration = duration;
+  cmdPan.movementFunction = movementFunction;
+  addMovementCommand(cmdPan);
 
-  for (int step = 0; step <= totalSteps; ++step) {
-    float t = step / static_cast<float>(totalSteps); // Normalize step to range from 0 to 1
-    int newDutyCycle = easeInOutQuad(t, currentDutyCycle,
-                                     targetDutyCycle - currentDutyCycle, 1);
-    setDutyCycle(channel, newDutyCycle);
-    std::this_thread::sleep_for(std::chrono::milliseconds(stepDuration));
+  // Tilt Command
+  MovementCommand cmdTilt;
+  cmdTilt.channel = CHANNEL_TILT;
+  cmdTilt.startDutyCycle = getCurrentDutyCycle(CHANNEL_TILT);
+  cmdTilt.targetDutyCycle = std::clamp(targetTilt, PWMConfig::PULSE_WIDTH_MIN,
+                                       PWMConfig::PULSE_WIDTH_MAX);
+  cmdTilt.duration = duration;
+  cmdTilt.movementFunction = movementFunction;
+  addMovementCommand(cmdTilt);
+}
+
+void PWMController::addMovementCommand(const MovementCommand &cmd) {
+  std::lock_guard<std::mutex> lock(queueMutex);
+  commandQueue.push(cmd);
+}
+
+void PWMController::startControlLoop() {
+  running = true;
+  controlLoopThread = std::thread(&PWMController::controlLoop, this);
+}
+
+void PWMController::stopControlLoop() {
+  running = false;
+  if (controlLoopThread.joinable()) {
+    controlLoopThread.join();
   }
-
-  currentDutyCycle = targetDutyCycle;
 }
 
-void PWMController::smoothMoveThread(int targetDutyCyclePan,
-                                     int targetDutyCycleTilt, int duration) {
-  std::thread panThread(&PWMController::smoothMove, this, 2, targetDutyCyclePan,
-                        duration);
-  std::thread tiltThread(&PWMController::smoothMove, this, 3,
-                         targetDutyCycleTilt, duration);
+void PWMController::controlLoop() {
+  const int updateIntervalMs = 20; // 50Hz
+  std::vector<MovementCommand> activeCommands;
 
-  panThread.join();
-  tiltThread.join();
+  while (running) {
+    auto loopStartTime = std::chrono::steady_clock::now();
+
+    // Transfer commands from queue to activeCommands
+    {
+      std::lock_guard<std::mutex> lock(queueMutex);
+      while (!commandQueue.empty()) {
+        MovementCommand cmd = commandQueue.front();
+        commandQueue.pop();
+        cmd.startTime = std::chrono::steady_clock::now();
+        activeCommands.push_back(cmd);
+      }
+    }
+
+    // Process active commands
+    for (auto it = activeCommands.begin(); it != activeCommands.end();) {
+      MovementCommand &cmd = *it;
+      auto now = std::chrono::steady_clock::now();
+      int elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now - cmd.startTime)
+                          .count();
+
+      if (elapsedMs <= cmd.duration) {
+        float t = static_cast<float>(elapsedMs) / cmd.duration;
+        int change = cmd.targetDutyCycle - cmd.startDutyCycle;
+        int newDutyCycle = cmd.movementFunction(t, cmd.startDutyCycle, change);
+        setDutyCycle(cmd.channel, newDutyCycle);
+        ++it;
+      } else {
+        // Movement complete, set final position
+        setDutyCycle(cmd.channel, cmd.targetDutyCycle);
+        it = activeCommands.erase(it); // Remove completed command
+      }
+    }
+
+    // Sleep until next update
+    auto loopEndTime = std::chrono::steady_clock::now();
+    int loopDurationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             loopEndTime - loopStartTime)
+                             .count();
+    int sleepTimeMs = updateIntervalMs - loopDurationMs;
+    if (sleepTimeMs > 0) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(sleepTimeMs));
+    } else {
+      // Loop is taking longer than expected
+      // Optionally handle this case
+    }
+  }
 }
 
-void PWMController::moveThread(int dutyCyclePan, int dutyCycleTilt) {
-  std::thread panThread(&PWMController::setDutyCycle, this, 2, dutyCyclePan);
-  std::thread tiltThread(&PWMController::setDutyCycle, this, 3, dutyCycleTilt);
+int linear(float t, int b, int c) { return b + c * t; }
 
-  panThread.join();
-  tiltThread.join();
+// Movement functions
+int easeInOutQuad(float t, int b, int c) {
+  t /= 0.5f;
+  if (t < 1)
+    return c / 2 * t * t + b;
+  t -= 1;
+  return -c / 2 * (t * (t - 2) - 1) + b;
+}
 
-  currentDutyCyclePan = dutyCyclePan;
-  currentDutyCycleTilt = dutyCycleTilt;
+// Helper methods for file paths and descriptors
+std::string PWMController::getPWMFilePath(const std::string &chip, int channel,
+                                          const std::string &property) const {
+  return "/sys/class/pwm/" + chip + "/pwm" + std::to_string(channel) + "/" +
+         property;
+}
+
+std::string PWMController::getPWMFilePath(const std::string &chip,
+                                          const std::string &property) const {
+  return "/sys/class/pwm/" + chip + "/" + property;
+}
+
+int PWMController::openFileDescriptor(const std::string &filePath) {
+  int fd = open(filePath.c_str(), O_WRONLY);
+  if (fd == -1) {
+    std::cerr << "Unable to open file: " << filePath << std::endl;
+  }
+  return fd;
 }
