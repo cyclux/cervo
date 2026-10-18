@@ -45,7 +45,7 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  const std::string CHIP = "pwmchip2"; // Example value
+  const std::string CHIP = PWMController::DEFAULT_PWM_DEVICE;
 
   PWMController servo(CHIP);
   servo.init({PWMController::CHANNEL_PAN, PWMController::CHANNEL_TILT});

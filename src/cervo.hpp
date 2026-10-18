@@ -24,7 +24,15 @@ struct PWMConfig {
 
 class PWMController {
 public:
-  PWMController(const std::string &chip = "pwmchip2");
+  // Device of the RP1 PWM0 block (GPIO18/19 with the pwm-2chan overlay).
+  // The pwmchipN number of this device can change between kernels.
+  static constexpr const char *DEFAULT_PWM_DEVICE = "1f00098000.pwm";
+
+  // chip is a pwmchipN name or a device name such as "1f00098000.pwm".
+  PWMController(const std::string &chip = DEFAULT_PWM_DEVICE);
+
+  // Returns the pwmchipN name for a pwmchipN name or a PWM device name.
+  static std::string resolveChip(const std::string &chipOrDevice);
   ~PWMController();
 
   void init(const std::vector<int> &channels);

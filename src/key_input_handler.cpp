@@ -1,4 +1,5 @@
 #include "key_input_handler.hpp"
+#include <algorithm>
 #include <ncurses.h>
 #include <thread>
 #include <unordered_set>

@@ -5,10 +5,28 @@
 #include <fcntl.h>
 #include <filesystem>
 #include <iostream>
+#include <stdexcept>
 #include <unistd.h>
 
-PWMController::PWMController(const std::string &chip) : chip(chip) {
+PWMController::PWMController(const std::string &chip)
+    : chip(resolveChip(chip)) {
   initializeMovementFunctions();
+}
+
+// Returns the pwmchipN name for a pwmchipN name or a PWM device name.
+std::string PWMController::resolveChip(const std::string &chipOrDevice) {
+  if (chipOrDevice.rfind("pwmchip", 0) == 0) {
+    return chipOrDevice;
+  }
+  for (const auto &entry :
+       std::filesystem::directory_iterator("/sys/class/pwm")) {
+    std::error_code ec;
+    const auto device = std::filesystem::read_symlink(entry.path() / "device", ec);
+    if (!ec && device.filename() == chipOrDevice) {
+      return entry.path().filename().string();
+    }
+  }
+  throw std::runtime_error("No PWM chip found for device " + chipOrDevice);
 }
 
 PWMController::~PWMController() {
