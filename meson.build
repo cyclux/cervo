@@ -15,10 +15,17 @@ system_include = include_directories('/usr/include', '/usr/include/aarch64-linux
 if get_option('install_libs')
   pwm_controller_lib = library('cervo',
     sources: ['src/cervo.cpp'],
-    install: true,
-    install_dir: '/usr/local/lib'  # System-wide install
+    install: true  # System-wide install in libdir
   )
   install_headers(['src/cervo.hpp'], subdir: 'cervo')
+
+  # cervo.pc lets other projects (rpicam-apps) use dependency('cervo')
+  pkg = import('pkgconfig')
+  pkg.generate(pwm_controller_lib,
+    name: 'cervo',
+    description: 'Servo controller library for cervo project',
+    subdirs: 'cervo'
+  )
 else
   pwm_controller_lib = library('cervo',
     sources: ['src/cervo.cpp'],
